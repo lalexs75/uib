@@ -161,6 +161,10 @@ type
     FCharacterSet: TCharacterSet;
     FSQLDialect: Word;
     FStoreInDFM: Boolean;
+    FAllowStreamedConnected: Boolean;
+    FStreamedConnected      : Boolean;
+    FDefTransactionRead: TUIBTransaction;
+    FDefTransactionWrite: TUIBTransaction;
 
     FMetaDataOptions: TMetaDataOptions;
     FOnInfoReadSeqCount: TOnInfoTableOpCount;
@@ -179,6 +183,7 @@ type
     procedure SetDatabaseName(const Value: TFileName);
     procedure SetConnected(const Value: boolean);
     function GetConnected: boolean;
+    procedure InternalSetConnected(const Value: boolean);
     procedure SetSQLDialect(const Value: Integer);
     function GetSQLDialect: Integer;
     function GetCharacterSet: TCharacterSet;
@@ -227,6 +232,7 @@ type
     function CanConnect : Boolean; virtual;
     procedure DoOnConnectionLost(Lib: TUIBLibrary); virtual;
     procedure DoOnGetDBExceptionClass(Number: Integer; out Excep: EUIBExceptionClass); virtual;
+    procedure Loaded; override;
     function ReadParamString(Param: String; Default: String = ''): String;
     procedure WriteParamString(Param: String; Value: String);
     function ReadParamInteger(Param: String; Default: Integer): Integer;
@@ -463,6 +469,9 @@ type
     { Connect or disconnect a database. }
     property Connected: boolean read GetConnected write SetConnected default False;
     property Role: string read GetRole write SetRole;
+    property AllowStreamedConnected : Boolean read FAllowStreamedConnected write FAllowStreamedConnected default true;
+    property DefTransactionRead  : TUIBTransaction read FDefTransactionRead write FDefTransactionRead;
+    property DefTransactionWrite : TUIBTransaction read FDefTransactionWrite write FDefTransactionWrite;
 
     property OnInfoReadSeqCount: TOnInfoTableOpCount read FOnInfoReadSeqCount write FOnInfoReadSeqCount;
     property OnInfoReadIdxCount: TOnInfoTableOpCount read FOnInfoReadIdxCount write FOnInfoReadIdxCount;
@@ -1324,6 +1333,7 @@ begin
   FMetadata := nil;
   FMetaDataOptions := TMetaDataOptions.Create;
   FStoreInDFM := True;
+  FAllowStreamedConnected := true;
 end;
 
 destructor TUIBDataBase.Destroy;
@@ -1361,6 +1371,49 @@ end;
 function TUIBDataBase.GetConnected: boolean;
 begin
   result := FDbHandle <> nil;
+end;
+
+procedure TUIBDataBase.InternalSetConnected(const Value: boolean);
+begin
+  if (Value = Connected) then Exit;
+  with FLibrary do
+  case Value of
+    True  :
+      begin
+        if not CanConnect then
+          Exit;
+        if Assigned(BeforeConnect) then BeforeConnect(Self);
+        FLibrary.Load(FLiBraryName);
+        if not FHandleShared then
+        begin
+{$IFDEF FB25_UP}
+{$IFDEF UNICODE}
+          if FParams.IndexOf('utf8_filename') >= 0 then
+            AttachDatabase(MBUEncode(FDatabaseName, CP_UTF8), FDbHandle, AnsiString(FParams.Text), BreakLine) else
+{$ENDIF}
+{$ENDIF}
+            AttachDatabase(AnsiString(FDatabaseName), FDbHandle, AnsiString(FParams.Text), BreakLine);
+        end;
+        RegisterEvents;
+        if Assigned(AfterConnect) then AfterConnect(Self);
+      end;
+    False :
+      begin
+        if Assigned(BeforeDisconnect) then BeforeDisconnect(Self);
+        CloseStatements;
+        CloseTransactions;
+        UnRegisterEvents;
+        if FMetadata <> nil then
+          FreeAndNil(FMetadata);
+        if FHandleShared then
+        begin
+          FDbHandle := nil;
+          FHandleShared := False;
+        end else
+          DetachDatabase(FDbHandle);
+        if Assigned(AfterDisconnect) then AfterDisconnect(Self);
+      end;
+  end;
 end;
 
 function TUIBDataBase.GetPassWord: string;
@@ -1462,45 +1515,13 @@ end;
 
 procedure TUIBDataBase.SetConnected(const Value: boolean);
 begin
-  if (Value = Connected) then Exit;
-  with FLibrary do
-  case Value of
-    True  :
-      begin
-        if not CanConnect then
-          Exit;
-        if Assigned(BeforeConnect) then BeforeConnect(Self);
-        FLibrary.Load(FLiBraryName);
-        if not FHandleShared then
-        begin
-{$IFDEF FB25_UP}
-{$IFDEF UNICODE}
-          if FParams.IndexOf('utf8_filename') >= 0 then
-            AttachDatabase(MBUEncode(FDatabaseName, CP_UTF8), FDbHandle, AnsiString(FParams.Text), BreakLine) else
-{$ENDIF}
-{$ENDIF}
-            AttachDatabase(AnsiString(FDatabaseName), FDbHandle, AnsiString(FParams.Text), BreakLine);
-        end;
-        RegisterEvents;
-        if Assigned(AfterConnect) then AfterConnect(Self);
-      end;
-    False :
-      begin
-        if Assigned(BeforeDisconnect) then BeforeDisconnect(Self);
-        CloseStatements;
-        CloseTransactions;
-        UnRegisterEvents;
-        if FMetadata <> nil then
-          FreeAndNil(FMetadata);
-        if FHandleShared then
-        begin
-          FDbHandle := nil;
-          FHandleShared := False;
-        end else
-          DetachDatabase(FDbHandle);
-        if Assigned(AfterDisconnect) then AfterDisconnect(Self);
-      end;
+    if (csReading in ComponentState) then
+    begin
+      FStreamedConnected := Value;
+      exit;
   end;
+  if (Value = Connected) then Exit;
+  InternalSetConnected(Value);
 end;
 
 procedure TUIBDataBase.SetDatabaseName(const Value: TFileName);
@@ -1684,6 +1705,32 @@ procedure TUIBDataBase.doOnParamChange(Sender: TObject);
 begin
   FCharacterSet := StrToCharacterSet(RawbyteString(ReadParamString('lc_ctype', 'NONE')));
   FSQLDialect := ReadParamInteger('sql_dialect', 3);
+end;
+
+procedure TUIBDataBase.Loaded;
+begin
+  try
+    If (not FAllowStreamedConnected) and
+       (not (csDesigning in ComponentState)) then
+    begin
+      FStreamedConnected := false;
+{      for i := 0 to FTransactions.Count - 1 do
+        if  FTransactions[i] <> nil then
+          with TIBTransaction(FTransactions[i]) do
+            FStreamedActive := False;}
+    end;
+    if FAllowStreamedConnected and (GetConnected <> FStreamedConnected) then
+    begin
+      InternalSetConnected(FStreamedConnected);
+      inherited Loaded;
+    end
+  except
+    if csDesigning in ComponentState then
+      if Assigned(ApplicationHandleException) then
+        ApplicationHandleException(Self)
+    else
+      raise;
+  end;
 end;
 
 function TUIBDataBase.GetMetadata(Refresh: boolean = False): TObject;

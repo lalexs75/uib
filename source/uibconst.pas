@@ -91,7 +91,11 @@ const
   EUIB_INVALIDEIBVERSION   = 'Incorrect Database Server version, check compiler options.';
   EUIB_CANTLOADLIB         = 'Can''t load library: %s.';
   EUIB_DBHANDLEALREADYSET  = 'Database handle already assigned, first disconnect database.';
+  {$IFDEF UIB_NO_COMPONENT}
   EUIB_TRANSACTIONNOTDEF   = 'Transaction not assigned.';
+  {$ELSE}
+  EUIB_TRANSACTIONNOTDEF   = '%s: transaction not assigned.';
+  {$ENDIF}
   EUIB_DATABASENOTDEF      = 'Database not assigned.';
   EUIB_QUERYNOTOPEN        = 'Query not open.';
   EUIB_CASTERROR           = 'Cast error.';
