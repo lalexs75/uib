@@ -5367,7 +5367,7 @@ end;
   {$IFDEF UNICODE}
     SetByNameAsUnicodeString(name, Value);
   {$ELSE}
-    SetByNameAsAnsiString(name, Value);;
+    SetByNameAsAnsiString(name, Value);
   {$ENDIF}
   end;
 
